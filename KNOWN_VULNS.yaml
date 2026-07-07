@@ -1,0 +1,237 @@
+# KNOWN_VULNS — ground-truth vulnerability catalog
+# Purpose: answer key for benchmarking Scantonomous scan findings against this app.
+# Diff scanner output vs. this file: a hit on a `vulnerable_source` path == true positive;
+# a hit on a `secure_source` path == false positive.
+#
+# Schema per entry:
+#   id               stable slug for this vuln class
+#   category         human-readable vulnerability class
+#   cwe              primary CWE id(s)
+#   owasp            OWASP Top 10 (2021) category
+#   module           app-internal module/feature name
+#   route            HTTP path to reach it (DAST)
+#   parameter        injectable/tainted input(s) (DAST)
+#   vulnerable_source source files that ARE vulnerable (SAST true-positive targets)
+#   secure_source    hardened variant that is NOT vulnerable (false-positive test)
+#   notes            context / caveats
+
+app: DSVW
+full_name: Damn Small Vulnerable Web
+upstream: https://github.com/stamparm/DSVW
+fork: https://github.com/tomj12k/DSVW
+language: Python
+scan_surface: [SAST-python, DAST-web]
+catalog_notes: >
+  Entire app is a single file dsvw.py (<100 LoC) implementing ~20 intentional
+  vulnerabilities in one do_GET request handler dispatched by query parameter.
+  There is no hardened variant, so secure_source is empty for every entry.
+  `notes` gives the approximate line region in dsvw.py for each sink. The
+  in-memory SQLite DB is seeded from USERS_XML (line 11). Server listens on
+  127.0.0.1:65412. Paths are relative to repo root.
+
+vulns:
+  - id: dsvw-sqli-union
+    category: SQL Injection (UNION / boolean / time-based blind)
+    cwe: [CWE-89]
+    owasp: A03:2021-Injection
+    route: /
+    parameter: [id]
+    vulnerable_source: [dsvw.py]
+    secure_source: []
+    notes: >
+      Lines 29-31. cursor.execute("SELECT ... FROM users WHERE id=" + params["id"])
+      concatenates the id param directly. Supports UNION, boolean-blind and
+      time-based-blind exploitation (see CASES tuple, line 12).
+
+  - id: dsvw-sqli-login-bypass
+    category: SQL Injection — Authentication Bypass (with HTTP Parameter Pollution)
+    cwe: [CWE-89]
+    owasp: A03:2021-Injection
+    route: /login
+    parameter: [username, password]
+    vulnerable_source: [dsvw.py]
+    secure_source: []
+    notes: >
+      Lines 66-68. password concatenated raw into "SELECT * FROM users WHERE
+      username='...' AND password='...'". Login bypass via ' OR '1' LIKE '1.
+      Same sink also reachable via HTTP Parameter Pollution (duplicate password
+      params merged by the parser at line 26).
+
+  - id: dsvw-sqli-comment-store
+    category: SQL Injection (stored via comment INSERT)
+    cwe: [CWE-89]
+    owasp: A03:2021-Injection
+    route: /
+    parameter: [comment]
+    vulnerable_source: [dsvw.py]
+    secure_source: []
+    notes: >
+      Line 50. INSERT INTO comments VALUES(NULL, '%s', ...) built with unescaped
+      comment param.
+
+  - id: dsvw-xss-reflected
+    category: Reflected Cross-Site Scripting
+    cwe: [CWE-79]
+    owasp: A03:2021-Injection
+    route: /
+    parameter: [v]
+    vulnerable_source: [dsvw.py]
+    secure_source: []
+    notes: Line 32-33. v param reflected unescaped into HTML_POSTFIX version string.
+
+  - id: dsvw-xss-stored
+    category: Stored Cross-Site Scripting
+    cwe: [CWE-79]
+    owasp: A03:2021-Injection
+    route: /
+    parameter: [comment]
+    vulnerable_source: [dsvw.py]
+    secure_source: []
+    notes: >
+      Lines 48-54. comment stored unescaped and rendered back in the comments
+      table for all visitors.
+
+  - id: dsvw-xss-dom
+    category: DOM-based Cross-Site Scripting
+    cwe: [CWE-79]
+    owasp: A03:2021-Injection
+    route: /
+    parameter: ["#lang (URL fragment)"]
+    vulnerable_source: [dsvw.py]
+    secure_source: []
+    notes: >
+      Line 10 (HTML_PREFIX inline script). document.write() of
+      decodeURIComponent(location.hash 'lang=' value) — sink is client-side JS.
+
+  - id: dsvw-xss-jsonp
+    category: Cross-Site Scripting (JSONP callback injection)
+    cwe: [CWE-79]
+    owasp: A03:2021-Injection
+    route: /users.json
+    parameter: [callback]
+    vulnerable_source: [dsvw.py]
+    secure_source: []
+    notes: Lines 64-65. callback param wrapped around JSON output with no validation.
+
+  - id: dsvw-xxe
+    category: XML External Entity Injection (local file + remote SSRF)
+    cwe: [CWE-611]
+    owasp: A05:2021-Security Misconfiguration
+    route: /
+    parameter: [xml]
+    vulnerable_source: [dsvw.py]
+    secure_source: []
+    notes: >
+      Line 40-41. lxml.etree.XMLParser(load_dtd=True, resolve_entities=True,
+      no_network=False) parses attacker XML — enables file:// disclosure and
+      http:// SSRF via external entities.
+
+  - id: dsvw-ssrf
+    category: Server-Side Request Forgery
+    cwe: [CWE-918]
+    owasp: A10:2021-Server-Side Request Forgery
+    route: /
+    parameter: [path]
+    vulnerable_source: [dsvw.py]
+    secure_source: []
+    notes: >
+      Lines 36-37. If path contains '://', urllib.request.urlopen(path) fetches
+      an attacker-controlled URL (e.g. http://127.0.0.1:631).
+
+  - id: dsvw-xpath-injection
+    category: Blind XPath Injection
+    cwe: [CWE-643]
+    owasp: A03:2021-Injection
+    route: /
+    parameter: [name]
+    vulnerable_source: [dsvw.py]
+    secure_source: []
+    notes: >
+      Lines 42-43. name param concatenated into an XPath expression
+      ".//user[name/text()='%s']" against USERS_XML — allows password extraction.
+
+  - id: dsvw-insecure-deserialization
+    category: Insecure Deserialization (Python pickle → RCE)
+    cwe: [CWE-502]
+    owasp: A08:2021-Software and Data Integrity Failures
+    route: /
+    parameter: [object]
+    vulnerable_source: [dsvw.py]
+    secure_source: []
+    notes: >
+      Lines 34-35. pickle.loads(params["object"]) on attacker bytes gives
+      arbitrary code execution (crafted 'cos\nsystem\n...' payload).
+
+  - id: dsvw-command-injection
+    category: OS Command Injection
+    cwe: [CWE-78]
+    owasp: A03:2021-Injection
+    route: /
+    parameter: [domain]
+    vulnerable_source: [dsvw.py]
+    secure_source: []
+    notes: >
+      Lines 38-39. subprocess.run("nslookup " + params["domain"], shell=True)
+      — shell metacharacters in domain execute arbitrary commands.
+
+  - id: dsvw-code-injection-rfi
+    category: Code Injection via Remote File Inclusion (exec)
+    cwe: [CWE-95]
+    owasp: A03:2021-Injection
+    route: /
+    parameter: [include]
+    vulnerable_source: [dsvw.py]
+    secure_source: []
+    notes: >
+      Lines 55-58. Fetches include target (local file or http:// URL) then
+      exec(program, envs) — arbitrary Python code execution / remote file
+      inclusion.
+
+  - id: dsvw-path-traversal
+    category: Path Traversal / Local File & Source Code Disclosure
+    cwe: [CWE-22]
+    owasp: A01:2021-Broken Access Control
+    route: /
+    parameter: [path]
+    vulnerable_source: [dsvw.py]
+    secure_source: []
+    notes: >
+      Lines 36-37. open(os.path.abspath(params["path"])) reads any local file
+      when no '://' present — covers path traversal (../../etc/passwd), source
+      code disclosure (dsvw.py) and full-path disclosure (invalid path error).
+
+  - id: dsvw-open-redirect
+    category: Unvalidated Redirect
+    cwe: [CWE-601]
+    owasp: A01:2021-Broken Access Control
+    route: /
+    parameter: [redir]
+    vulnerable_source: [dsvw.py]
+    secure_source: []
+    notes: >
+      Lines 60-61. redir param injected into a <meta http-equiv="refresh"
+      url=...> with no allowlist.
+
+  - id: dsvw-http-header-injection
+    category: HTTP Response Header Injection / CRLF (phishing)
+    cwe: [CWE-113]
+    owasp: A03:2021-Injection
+    route: /
+    parameter: [charset]
+    vulnerable_source: [dsvw.py]
+    secure_source: []
+    notes: >
+      Line 78. charset param placed into Content-Type header ("; charset=%s");
+      CRLF in the value injects additional response headers/body.
+
+  - id: dsvw-dos-memory
+    category: Denial of Service (memory / CPU amplification)
+    cwe: [CWE-400]
+    owasp: A04:2021-Insecure Design
+    route: /
+    parameter: [size]
+    vulnerable_source: [dsvw.py]
+    secure_source: []
+    notes: >
+      Lines 45-47. Builds an int(size) x int(size) string with no upper bound —
+      large size exhausts memory.
